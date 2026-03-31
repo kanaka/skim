@@ -1,0 +1,415 @@
+#!/usr/bin/env node
+"use strict";
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { parseArgs } = require("node:util");
+
+const NL = Buffer.from("\n");
+const SHORT_SIZE_RE = /^-\d+$/;
+
+const HELP = `usage: skim [options]
+
+Print first/last lines with optional progress markers and sampling.
+Markers/samples are buffered until input exceeds --head + --tail.
+
+options:
+  -h, --help            Show this help and exit
+  --head N              Number of leading lines to print (default: 5)
+  --tail N              Number of trailing lines to print (default: 5)
+  -N                    Shorthand for --head N --tail N (example: -3)
+  --tick-every N        Print a marker every N lines (default: 20)
+  --tick-char C         Single marker character (default: .)
+  --peek-every N        Print current line every N lines (default: 0)
+  --timeout SEC         Timeout in seconds for stdin read (default: 0)
+  --tmp-dir DIR         Directory for full-output logs
+                        (default: $TMPDIR/skim)
+  --max-files N         Maximum skim log files to keep (default: 200)
+  --max-age-days N      Delete logs older than this many days
+                        (default: 7)
+  --quiet-log-path      Do not print full log path to stderr
+`;
+
+const TOKEN_OPTIONS = {
+  help: { type: "boolean", short: "h", default: false },
+  head: { type: "string", default: "5" },
+  tail: { type: "string", default: "5" },
+  "tick-every": { type: "string", default: "20" },
+  "tick-char": { type: "string", default: "." },
+  "peek-every": { type: "string", default: "0" },
+  timeout: { type: "string", default: "0" },
+  "tmp-dir": { type: "string", default: "" },
+  "max-files": { type: "string", default: "200" },
+  "max-age-days": { type: "string", default: "7" },
+  "quiet-log-path": { type: "boolean", default: false },
+};
+
+class BrokenPipe extends Error {}
+
+function out(buf) {
+  try {
+    fs.writeSync(1, buf);
+  } catch (e) {
+    if (e && e.code === "EPIPE") throw new BrokenPipe();
+    throw e;
+  }
+}
+
+function err(text) {
+  try {
+    fs.writeSync(2, Buffer.from(text));
+  } catch (e) {
+    if (!(e && e.code === "EPIPE")) throw e;
+  }
+}
+
+function shortSizeIndices(argv) {
+  const { tokens } = parseArgs({
+    args: argv,
+    options: TOKEN_OPTIONS,
+    strict: false,
+    allowPositionals: true,
+    tokens: true,
+  });
+
+  const set = new Set();
+  for (const t of tokens) {
+    if (t.kind === "option" && SHORT_SIZE_RE.test(t.rawName || "")) {
+      set.add(t.index);
+    }
+  }
+  return set;
+}
+
+function parseCli(argv) {
+  const shortN = shortSizeIndices(argv);
+  const cfg = {
+    head: Number(TOKEN_OPTIONS.head.default),
+    tail: Number(TOKEN_OPTIONS.tail.default),
+    tickEvery: Number(TOKEN_OPTIONS["tick-every"].default),
+    tickChar: TOKEN_OPTIONS["tick-char"].default,
+    peekEvery: Number(TOKEN_OPTIONS["peek-every"].default),
+    timeout: Number(TOKEN_OPTIONS.timeout.default),
+    tmpDir: TOKEN_OPTIONS["tmp-dir"].default,
+    maxFiles: Number(TOKEN_OPTIONS["max-files"].default),
+    maxAgeDays: Number(TOKEN_OPTIONS["max-age-days"].default),
+    quietLogPath: TOKEN_OPTIONS["quiet-log-path"].default,
+  };
+
+  const int = (name, raw, min = null) => {
+    const n = Number(raw);
+    if (!Number.isInteger(n)) throw new Error(`${name} must be an integer`);
+    if (min != null && n < min) throw new Error(`${name} must be >= ${min}`);
+    return n;
+  };
+
+  const float = (name, raw, min = null) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) throw new Error(`${name} must be a number`);
+    if (min != null && n < min) throw new Error(`${name} must be >= ${min}`);
+    return n;
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+
+    if (shortN.has(i)) {
+      const n = int("-N", tok.slice(1), 0);
+      cfg.head = n;
+      cfg.tail = n;
+      continue;
+    }
+
+    if (tok === "-h" || tok === "--help") return null;
+    if (tok === "--") {
+      if (i + 1 < argv.length) {
+        throw new Error(`Unexpected positional argument: ${argv[i + 1]}`);
+      }
+      break;
+    }
+    if (!tok.startsWith("--")) {
+      throw new Error(`Unexpected positional argument: ${tok}`);
+    }
+
+    let name = tok;
+    let inline = null;
+    const eq = tok.indexOf("=");
+    if (eq >= 0) {
+      name = tok.slice(0, eq);
+      inline = tok.slice(eq + 1);
+    }
+
+    const take = () => {
+      if (inline != null) return inline;
+      i += 1;
+      if (i >= argv.length) throw new Error(`${name} requires a value`);
+      return argv[i];
+    };
+
+    switch (name) {
+      case "--quiet-log-path":
+        if (inline != null) throw new Error(`${name} does not accept a value`);
+        cfg.quietLogPath = true;
+        break;
+      case "--head":
+        cfg.head = int(name, take(), 0);
+        break;
+      case "--tail":
+        cfg.tail = int(name, take(), 0);
+        break;
+      case "--tick-every":
+        cfg.tickEvery = int(name, take(), 0);
+        break;
+      case "--tick-char":
+        cfg.tickChar = take();
+        break;
+      case "--peek-every":
+        cfg.peekEvery = int(name, take(), 0);
+        break;
+      case "--timeout":
+        cfg.timeout = float(name, take(), 0);
+        break;
+      case "--tmp-dir":
+        cfg.tmpDir = take();
+        break;
+      case "--max-files":
+        cfg.maxFiles = int(name, take());
+        break;
+      case "--max-age-days":
+        cfg.maxAgeDays = int(name, take());
+        break;
+      default:
+        throw new Error(`Unknown option '${name}'`);
+    }
+  }
+
+  if ([...cfg.tickChar].length !== 1) {
+    throw new Error("--tick-char must be exactly one character");
+  }
+  return cfg;
+}
+
+function ensureTmpDir(tmpDirArg) {
+  const dir = tmpDirArg ? path.resolve(tmpDirArg) : path.join(os.tmpdir(), "skim");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function makeLogPath(dir) {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}`;
+  const time = `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  const stamp = `${date}-${time}`;
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let suffix = "";
+  for (let i = 0; i < 6; i++) {
+    suffix += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return path.join(dir, `skim-${stamp}-pid${process.pid}-${suffix}.log`);
+}
+
+function pruneLogs(dir, maxFiles, maxAgeDays) {
+  const files = [];
+  for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!d.isFile()) continue;
+    if (!d.name.startsWith("skim-") || !d.name.endsWith(".log")) continue;
+    const p = path.join(dir, d.name);
+    try {
+      files.push({ path: p, mtimeMs: fs.statSync(p).mtimeMs });
+    } catch {
+      // file disappeared
+    }
+  }
+
+  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const now = Date.now();
+  const ageLimit = maxAgeDays > 0 ? maxAgeDays * 86400 * 1000 : null;
+  const keep = [];
+
+  for (const f of files) {
+    try {
+      if (ageLimit != null && now - f.mtimeMs > ageLimit) {
+        fs.rmSync(f.path, { force: true });
+      } else {
+        keep.push(f);
+      }
+    } catch {
+      // ignore prune errors
+    }
+  }
+
+  if (maxFiles >= 0 && keep.length > maxFiles) {
+    for (const f of keep.slice(0, keep.length - maxFiles)) {
+      try {
+        fs.rmSync(f.path, { force: true });
+      } catch {
+        // ignore prune errors
+      }
+    }
+  }
+}
+
+async function* iterLines(stream) {
+  let pending = Buffer.alloc(0);
+
+  for await (const chunk of stream) {
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    pending = pending.length ? Buffer.concat([pending, data]) : data;
+
+    let idx;
+    while ((idx = pending.indexOf(0x0a)) !== -1) {
+      yield pending.subarray(0, idx + 1);
+      pending = pending.subarray(idx + 1);
+    }
+  }
+
+  if (pending.length) yield pending;
+}
+
+async function run(cfg) {
+  const tmp = ensureTmpDir(cfg.tmpDir);
+  pruneLogs(tmp, cfg.maxFiles, cfg.maxAgeDays);
+
+  const logPath = makeLogPath(tmp);
+  const logFd = fs.openSync(logPath, "w");
+
+  const marker = Buffer.from(cfg.tickChar);
+  const window = cfg.head + cfg.tail;
+  const tailSize = cfg.tail;
+  const tail = tailSize > 0 ? new Array(tailSize) : null;
+
+  let lineNo = 0;
+  let timedOut = false;
+  let markerPending = false;
+  let tailPos = 0;
+  let tailCount = 0;
+  let pendingTicks = 0;
+  const pendingPeeks = []; // [ticks_before, raw]
+
+  const writeLine = (raw) => {
+    if (markerPending) {
+      out(NL);
+      markerPending = false;
+    }
+    out(raw);
+    if (raw[raw.length - 1] !== 0x0a) out(NL);
+  };
+
+  const emitTick = () => {
+    out(marker);
+    markerPending = true;
+  };
+
+  const flushPending = () => {
+    for (const [ticks, raw] of pendingPeeks) {
+      for (let i = 0; i < ticks; i++) emitTick();
+      writeLine(raw);
+    }
+    for (let i = 0; i < pendingTicks; i++) emitTick();
+    pendingTicks = 0;
+    pendingPeeks.length = 0;
+  };
+
+  const timer = cfg.timeout > 0
+    ? setTimeout(() => {
+      timedOut = true;
+      process.stdin.destroy(new Error("timeout"));
+    }, cfg.timeout * 1000)
+    : null;
+
+  try {
+    try {
+      for await (const raw of iterLines(process.stdin)) {
+        lineNo += 1;
+        fs.writeSync(logFd, raw);
+
+        if (lineNo <= cfg.head) writeLine(raw);
+
+        const tick = cfg.tickEvery > 0 && lineNo % cfg.tickEvery === 0;
+        const peekRaw =
+          cfg.peekEvery > 0 &&
+          lineNo % cfg.peekEvery === 0 &&
+          lineNo > cfg.head
+            ? raw
+            : null;
+
+        if (lineNo <= window) {
+          if (tick) pendingTicks += 1;
+          if (peekRaw) {
+            pendingPeeks.push([pendingTicks, peekRaw]);
+            pendingTicks = 0;
+          }
+        } else {
+          if (lineNo === window + 1) flushPending();
+          if (tick) emitTick();
+          if (peekRaw) writeLine(peekRaw);
+        }
+
+        if (tail) {
+          tail[tailPos] = [lineNo, raw];
+          tailPos = (tailPos + 1) % tailSize;
+          if (tailCount < tailSize) tailCount += 1;
+        }
+      }
+    } catch (e) {
+      if (!timedOut) throw e;
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
+    fs.closeSync(logFd);
+  }
+
+  if (tailCount > 0) {
+    if (markerPending) {
+      out(NL);
+      markerPending = false;
+    }
+
+    const tailStart = Math.max(1, lineNo - cfg.tail + 1);
+    for (let i = 0; i < tailCount; i++) {
+      const slot = (tailPos - tailCount + i + tailSize) % tailSize;
+      const [idx, raw] = tail[slot];
+      if (idx < tailStart || idx <= cfg.head) continue;
+      writeLine(raw);
+    }
+  }
+
+  if (!cfg.quietLogPath) err(`[skim] full output: ${logPath}\n`);
+  if (timedOut) {
+    err(`[skim] timeout reached after ${cfg.timeout}s\n`);
+    return 124;
+  }
+  return 0;
+}
+
+async function main() {
+  let cfg;
+  try {
+    cfg = parseCli(process.argv.slice(2));
+  } catch (e) {
+    err(`skim: ${e.message || String(e)}\n`);
+    return 2;
+  }
+
+  if (cfg == null) {
+    out(Buffer.from(HELP));
+    return 0;
+  }
+
+  return run(cfg);
+}
+
+main()
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((e) => {
+    if (e instanceof BrokenPipe) {
+      process.exitCode = 0;
+      return;
+    }
+    err(`skim: ${e && e.message ? e.message : String(e)}\n`);
+    process.exitCode = 1;
+  });

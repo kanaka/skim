@@ -1,0 +1,40 @@
+{
+  "name": "skim",
+  "version": "0.1.0",
+  "description": "CLI utility for monitoring and summarizing long command output, with optional agent skill packaging",
+  "license": "MIT",
+  "private": true,
+  "keywords": [
+    "cli",
+    "command-output",
+    "streaming",
+    "agent-skills",
+    "skim"
+  ],
+  "bin": {
+    "skim": "./skim"
+  },
+  "files": [
+    "skim",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "agents": {
+    "skills": [
+      {
+        "name": "skim",
+        "path": "./skills/skim"
+      }
+    ]
+  },
+  "scripts": {
+    "sync:skill-exec": "sh ./scripts/sync-skill-exec.sh",
+    "prepare": "npm run sync:skill-exec",
+    "pretest": "npm run sync:skill-exec",
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "prepack": "npm test"
+  }
+}

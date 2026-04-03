@@ -4,6 +4,8 @@
 
 It is especially useful with coding agents, where command output can be huge, noisy, or long running.
 
+Implemented as a node executable with no npm dependencies.
+
 ## What it does
 
 - prints first N lines
@@ -25,10 +27,13 @@ some-command | skim -3 --tick-every 10 --timeout 60
 
 This package also ships an Agent Skills-compatible skill at `skills/skim/`.
 
-It is structured to work with multiple skills conventions:
+It is structured to work with current distribution mechanisms:
 
-- `skills-npm` (discovers `skills/*/SKILL.md`)
-- `npm-agentskills` (uses `package.json` `agents.skills` entries)
+- **Direct git install (baseline):** [`vercel-labs/skills`](https://github.com/vercel-labs/skills#install-a-skill) via `npx skills add <repo>`, using the `skills/<skill>/SKILL.md` layout.
+- **npm-bundled discovery by folder convention:** [`antfu/skills-npm`](https://github.com/antfu/skills-npm) (see [`PROPOSAL.md`](https://github.com/antfu/skills-npm/blob/main/PROPOSAL.md)); discovers bundled `skills/*/SKILL.md`.
+- **npm-bundled discovery by `package.json` registration:** [`onmax/npm-agentskills`](https://github.com/onmax/npm-agentskills) (current reference implementation for `agents.skills`), using `package.json` `agents.skills` entries ([author docs](https://github.com/onmax/npm-agentskills#for-library-authors-bundling-skills)).
+
+`agents.skills` is currently a tooling convention (not part of the core Agent Skills file-format specification), so we include both the `skills/` directory and `agents.skills` metadata for compatibility.
 
 ## Layout
 

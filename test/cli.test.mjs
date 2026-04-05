@@ -217,6 +217,63 @@ test('timeout returns 124 and prints timeout message', async () => {
   assert.ok(elapsed < 1500, `timeout test was too slow: ${elapsed}ms`)
 })
 
+test('inactive timeout returns 125 and prints timeout message (wrapped mode)', () => {
+  const t0 = Date.now()
+  const res = run([
+    '--inactive-timeout', '0.15',
+    '--quiet-log-path',
+    '--',
+    process.execPath,
+    '-e',
+    'setTimeout(() => {}, 60000)',
+  ])
+  const elapsed = Date.now() - t0
+
+  assert.equal(res.status, 125)
+  assert.match(res.stderr, /inactive timeout reached/)
+  assert.ok(elapsed < 1500, `inactive timeout test was too slow: ${elapsed}ms`)
+})
+
+test('inactive timeout resets on chunk data, not only newline (wrapped mode)', () => {
+  const script = [
+    "let i = 0;",
+    "const chunks = ['a', 'b', 'c', '\\n'];",
+    'const t = setInterval(() => {',
+    '  process.stdout.write(chunks[i]);',
+    '  i += 1;',
+    '  if (i === chunks.length) { clearInterval(t); process.exit(0); }',
+    '}, 40);',
+  ].join(' ')
+
+  const res = run([
+    '--inactive-timeout', '0.15',
+    '--tick-every', '0',
+    '--quiet-log-path',
+    '--',
+    process.execPath,
+    '-e',
+    script,
+  ])
+
+  assert.equal(res.status, 0)
+  assert.equal(res.stderr, '')
+  assert.equal(res.stdout, 'abc\n')
+})
+
+test('wrapped mode returns child exit code', () => {
+  const res = run([
+    '--quiet-log-path',
+    '--',
+    process.execPath,
+    '-e',
+    "process.stdout.write('ok\\n'); process.exit(23)",
+  ])
+
+  assert.equal(res.status, 23)
+  assert.equal(res.stderr, '')
+  assert.equal(res.stdout, 'ok\n')
+})
+
 test('shorthand still works after regular options', () => {
   const res = run(['--head', '2', '-3', '--tick-every', '0', '--quiet-log-path'], lines(1, 8))
   assert.equal(res.status, 0)

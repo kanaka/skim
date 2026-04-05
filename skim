@@ -1,35 +1,46 @@
 #!/usr/bin/env node
 "use strict";
 
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const { parseArgs } = require("node:util");
-
-const NL = Buffer.from("\n");
-const SHORT_SIZE_RE = /^-\d+$/;
-
 const HELP = `usage: skim [options]
+       skim [options] -- cmd [args...]
 
 Print first/last lines with optional progress markers and sampling.
 Markers/samples are buffered until input exceeds --head + --tail.
 
 options:
-  -h, --help            Show this help and exit
-  --head N              Number of leading lines to print (default: 5)
-  --tail N              Number of trailing lines to print (default: 5)
-  -N                    Shorthand for --head N --tail N (example: -3)
-  --tick-every N        Print a marker every N lines (default: 20)
-  --tick-char C         Single marker character (default: .)
-  --peek-every N        Print current line every N lines (default: 0)
-  --timeout SEC         Timeout in seconds for stdin read (default: 0)
-  --tmp-dir DIR         Directory for full-output logs
-                        (default: $TMPDIR/skim)
-  --max-files N         Maximum skim log files to keep (default: 200)
-  --max-age-days N      Delete logs older than this many days
-                        (default: 7)
-  --quiet-log-path      Do not print full log path to stderr
+  -h, --help              Show this help and exit
+  --head N                Number of leading lines to print (default: 5)
+  --tail N                Number of trailing lines to print (default: 5)
+  -N                      Shorthand for --head N --tail N (example: -3)
+  --tick-every N          Print a marker every N lines (default: 20)
+  --tick-char C           Single marker character (default: .)
+  --peek-every N          Print current line every N lines (default: 0)
+  --timeout SEC           Timeout in seconds for total run (default: 0)
+                          Note: in pipeline mode won't interrupt until next write
+  --inactive-timeout SEC  Timeout if no output received for SEC seconds (default: 0)
+                          Wrapped mode only (skim [opts] -- cmd [args...])
+  --tmp-dir DIR           Directory for full-output logs (default: $TMPDIR/skim)
+  --max-files N           Maximum skim log files to keep (default: 200)
+  --max-age-days N        Delete logs older than this many days (default: 7)
+  --quiet-log-path        Do not print full log path to stderr
+
+return codes:
+  0                       Success
+  wrapped cmd code        Wrapped mode only: skim -- cmd [args...]
+  124                     --timeout reached
+  125                     --inactive-timeout reached
 `;
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { parseArgs } = require("node:util");
+const { spawn } = require("node:child_process");
+
+const NL = Buffer.from("\n");
+const SHORT_SIZE_RE = /^-\d+$/;
+const EXIT_TIMEOUT = 124;
+const EXIT_INACTIVE_TIMEOUT = 125;
 
 const TOKEN_OPTIONS = {
   help: { type: "boolean", short: "h", default: false },
@@ -39,6 +50,7 @@ const TOKEN_OPTIONS = {
   "tick-char": { type: "string", default: "." },
   "peek-every": { type: "string", default: "0" },
   timeout: { type: "string", default: "0" },
+  "inactive-timeout": { type: "string", default: "0" },
   "tmp-dir": { type: "string", default: "" },
   "max-files": { type: "string", default: "200" },
   "max-age-days": { type: "string", default: "7" },
@@ -91,6 +103,7 @@ function parseCli(argv) {
     tickChar: TOKEN_OPTIONS["tick-char"].default,
     peekEvery: Number(TOKEN_OPTIONS["peek-every"].default),
     timeout: Number(TOKEN_OPTIONS.timeout.default),
+    inactiveTimeout: Number(TOKEN_OPTIONS["inactive-timeout"].default),
     tmpDir: TOKEN_OPTIONS["tmp-dir"].default,
     maxFiles: Number(TOKEN_OPTIONS["max-files"].default),
     maxAgeDays: Number(TOKEN_OPTIONS["max-age-days"].default),
@@ -170,6 +183,9 @@ function parseCli(argv) {
       case "--timeout":
         cfg.timeout = float(name, take(), 0);
         break;
+      case "--inactive-timeout":
+        cfg.inactiveTimeout = float(name, take(), 0);
+        break;
       case "--tmp-dir":
         cfg.tmpDir = take();
         break;
@@ -201,13 +217,10 @@ function makeLogPath(dir) {
   const p2 = (n) => String(n).padStart(2, "0");
   const date = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}`;
   const time = `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-  const stamp = `${date}-${time}`;
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let suffix = "";
-  for (let i = 0; i < 6; i++) {
-    suffix += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return path.join(dir, `skim-${stamp}-pid${process.pid}-${suffix}.log`);
+  for (let i = 0; i < 6; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
+  return path.join(dir, `skim-${date}-${time}-pid${process.pid}-${suffix}.log`);
 }
 
 function pruneLogs(dir, maxFiles, maxAgeDays) {
@@ -216,11 +229,7 @@ function pruneLogs(dir, maxFiles, maxAgeDays) {
     if (!d.isFile()) continue;
     if (!d.name.startsWith("skim-") || !d.name.endsWith(".log")) continue;
     const p = path.join(dir, d.name);
-    try {
-      files.push({ path: p, mtimeMs: fs.statSync(p).mtimeMs });
-    } catch {
-      // file disappeared
-    }
+    try { files.push({ path: p, mtimeMs: fs.statSync(p).mtimeMs }); } catch { }
   }
 
   files.sort((a, b) => a.mtimeMs - b.mtimeMs);
@@ -235,45 +244,79 @@ function pruneLogs(dir, maxFiles, maxAgeDays) {
       } else {
         keep.push(f);
       }
-    } catch {
-      // ignore prune errors
-    }
+    } catch { }
   }
 
   if (maxFiles >= 0 && keep.length > maxFiles) {
     for (const f of keep.slice(0, keep.length - maxFiles)) {
-      try {
-        fs.rmSync(f.path, { force: true });
-      } catch {
-        // ignore prune errors
-      }
+      try { fs.rmSync(f.path, { force: true }); } catch { }
     }
   }
 }
 
-async function* iterLines(stream) {
+async function* iterLines(stream, onChunk = null) {
   let pending = Buffer.alloc(0);
 
-  for await (const chunk of stream) {
-    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    pending = pending.length ? Buffer.concat([pending, data]) : data;
+  try {
+    for await (const chunk of stream) {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (onChunk && data.length > 0) onChunk(data.length);
+      pending = pending.length ? Buffer.concat([pending, data]) : data;
 
-    let idx;
-    while ((idx = pending.indexOf(0x0a)) !== -1) {
-      yield pending.subarray(0, idx + 1);
-      pending = pending.subarray(idx + 1);
+      let idx;
+      while ((idx = pending.indexOf(0x0a)) !== -1) {
+        yield pending.subarray(0, idx + 1);
+        pending = pending.subarray(idx + 1);
+      }
     }
+  } catch (e) {
+    if (pending.length) {
+      yield pending;
+      pending = Buffer.alloc(0);
+    }
+    throw e;
   }
 
   if (pending.length) yield pending;
 }
 
-async function run(cfg) {
+async function run(cfg, cmdArgs) {
   const tmp = ensureTmpDir(cfg.tmpDir);
-  pruneLogs(tmp, cfg.maxFiles, cfg.maxAgeDays);
+  setImmediate(() => pruneLogs(tmp, cfg.maxFiles, cfg.maxAgeDays));
 
   const logPath = makeLogPath(tmp);
   const logFd = fs.openSync(logPath, "w");
+  let logClosed = false;
+
+  function closeLog() {
+    if (logClosed) return;
+    logClosed = true;
+    try { fs.closeSync(logFd); } catch (_) {}
+  }
+
+  // Wrapped mode: spawn the command and read from its stdout.
+  // This gives us a direct handle so --inactive-timeout can kill immediately.
+  let child = null;
+  let childClosed = null;
+  if (cmdArgs.length) {
+    child = spawn(cmdArgs[0], cmdArgs.slice(1), { stdio: ["inherit", "pipe", "inherit"] });
+    childClosed = new Promise((resolve) => {
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    child.on("error", e => { err(`skim: ${e.message}\n`); process.exit(1); });
+  }
+  const inputStream = child ? child.stdout : process.stdin;
+
+  function onSignal(sig) {
+    if (child) child.kill("SIGTERM");
+    closeLog();
+    if (!cfg.quietLogPath) err(`[skim] full output: ${logPath}\n`);
+    process.exit(sig === "SIGTERM" ? 143 : 130);
+  }
+  const onSIGTERM = () => onSignal("SIGTERM");
+  const onSIGINT  = () => onSignal("SIGINT");
+  process.once("SIGTERM", onSIGTERM);
+  process.once("SIGINT",  onSIGINT);
 
   const marker = Buffer.from(cfg.tickChar);
   const window = cfg.head + cfg.tail;
@@ -281,26 +324,20 @@ async function run(cfg) {
   const tail = tailSize > 0 ? new Array(tailSize) : null;
 
   let lineNo = 0;
-  let timedOut = false;
+  let timeoutReason = null;
   let markerPending = false;
   let tailPos = 0;
   let tailCount = 0;
   let pendingTicks = 0;
-  const pendingPeeks = []; // [ticks_before, raw]
+  const pendingPeeks = [];
 
   const writeLine = (raw) => {
-    if (markerPending) {
-      out(NL);
-      markerPending = false;
-    }
+    if (markerPending) { out(NL); markerPending = false; }
     out(raw);
     if (raw[raw.length - 1] !== 0x0a) out(NL);
   };
 
-  const emitTick = () => {
-    out(marker);
-    markerPending = true;
-  };
+  const emitTick = () => { out(marker); markerPending = true; };
 
   const flushPending = () => {
     for (const [ticks, raw] of pendingPeeks) {
@@ -312,16 +349,31 @@ async function run(cfg) {
     pendingPeeks.length = 0;
   };
 
-  const timer = cfg.timeout > 0
-    ? setTimeout(() => {
-      timedOut = true;
-      process.stdin.destroy(new Error("timeout"));
-    }, cfg.timeout * 1000)
+  const setTimeoutReason = (reason) => {
+    if (timeoutReason != null) return;
+    timeoutReason = reason;
+    if (child) child.kill("SIGTERM");
+    inputStream.destroy(new Error(reason));
+  };
+
+  const totalTimer = cfg.timeout > 0
+    ? setTimeout(() => setTimeoutReason("timeout"), cfg.timeout * 1000)
     : null;
+
+  let inactiveTimer = null;
+  const resetInactiveTimer = () => {
+    if (cfg.inactiveTimeout <= 0 || timeoutReason != null) return;
+    if (inactiveTimer) clearTimeout(inactiveTimer);
+    inactiveTimer = setTimeout(
+      () => setTimeoutReason("inactive-timeout"),
+      cfg.inactiveTimeout * 1000
+    );
+  };
+  resetInactiveTimer();
 
   try {
     try {
-      for await (const raw of iterLines(process.stdin)) {
+      for await (const raw of iterLines(inputStream, resetInactiveTimer)) {
         lineNo += 1;
         fs.writeSync(logFd, raw);
 
@@ -354,19 +406,18 @@ async function run(cfg) {
         }
       }
     } catch (e) {
-      if (!timedOut) throw e;
+      if (timeoutReason == null) throw e;
     }
   } finally {
-    if (timer) clearTimeout(timer);
-    fs.closeSync(logFd);
+    if (totalTimer) clearTimeout(totalTimer);
+    if (inactiveTimer) clearTimeout(inactiveTimer);
+    process.off("SIGTERM", onSIGTERM);
+    process.off("SIGINT",  onSIGINT);
+    closeLog();
   }
 
   if (tailCount > 0) {
-    if (markerPending) {
-      out(NL);
-      markerPending = false;
-    }
-
+    if (markerPending) { out(NL); markerPending = false; }
     const tailStart = Math.max(1, lineNo - cfg.tail + 1);
     for (let i = 0; i < tailCount; i++) {
       const slot = (tailPos - tailCount + i + tailSize) % tailSize;
@@ -377,39 +428,56 @@ async function run(cfg) {
   }
 
   if (!cfg.quietLogPath) err(`[skim] full output: ${logPath}\n`);
-  if (timedOut) {
+
+  if (timeoutReason === "timeout") {
     err(`[skim] timeout reached after ${cfg.timeout}s\n`);
-    return 124;
+    process.exit(EXIT_TIMEOUT);
   }
+  if (timeoutReason === "inactive-timeout") {
+    err(`[skim] inactive timeout reached after ${cfg.inactiveTimeout}s with no output\n`);
+    process.exit(EXIT_INACTIVE_TIMEOUT);
+  }
+
+  if (childClosed) {
+    const { code, signal } = await childClosed;
+    if (typeof code === "number") return code;
+    if (signal) {
+      const sig = os.constants?.signals?.[signal];
+      if (Number.isInteger(sig)) return 128 + sig;
+    }
+    return 1;
+  }
+
   return 0;
 }
 
 async function main() {
+  const dd = process.argv.indexOf("--", 2);
+  const cmdArgs = dd < 0 ? [] : process.argv.slice(dd + 1);
+  const skimArgv = dd < 0 ? process.argv.slice(2) : process.argv.slice(2, dd);
+
   let cfg;
   try {
-    cfg = parseCli(process.argv.slice(2));
+    cfg = parseCli(skimArgv);
   } catch (e) {
     err(`skim: ${e.message || String(e)}\n`);
     return 2;
   }
 
-  if (cfg == null) {
-    out(Buffer.from(HELP));
-    return 0;
+  if (cfg == null) { out(Buffer.from(HELP)); return 0; }
+  if (dd >= 0 && cmdArgs.length === 0) { err("skim: -- requires a command\n"); return 2; }
+  if (cfg.inactiveTimeout > 0 && !cmdArgs.length) {
+    err("skim: --inactive-timeout requires wrapped mode (skim [opts] -- cmd [args...])\n");
+    return 2;
   }
 
-  return run(cfg);
+  return run(cfg, cmdArgs);
 }
 
 main()
-  .then((code) => {
-    process.exitCode = code;
-  })
+  .then((code) => { process.exitCode = code; })
   .catch((e) => {
-    if (e instanceof BrokenPipe) {
-      process.exitCode = 0;
-      return;
-    }
+    if (e instanceof BrokenPipe) { process.exitCode = 0; return; }
     err(`skim: ${e && e.message ? e.message : String(e)}\n`);
     process.exitCode = 1;
   });

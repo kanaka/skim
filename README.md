@@ -12,6 +12,7 @@ Implemented as a node executable with no npm dependencies.
 - prints last N lines
 - prints progress ticks while streaming
 - optionally prints periodic sample lines
+- supports overall and inactivity timeouts
 - saves full output to temp logs with pruning
 
 ## Usage
@@ -21,7 +22,24 @@ skim --help
 
 some-command | skim
 some-command | skim -3 --tick-every 10 --timeout 60
+
+# wrapped mode (skim runs command directly)
+skim -- some-command arg1 arg2
+skim -- --inactive-timeout 30 some-command arg1 arg2
 ```
+
+## Exit codes
+
+- `0` — success
+- wrapped mode: child command exit code is returned
+- `124` — total timeout reached (`--timeout`)
+- `125` — inactivity timeout reached (`--inactive-timeout`)
+
+## Pipeline exit-code behavior
+
+- In plain shell pipelines, the shell usually returns the status of the **last** command (`skim`), which can hide upstream failures.
+- Use `set -o pipefail` (bash/zsh) if you want `some-command | skim` to fail when `some-command` fails.
+- In wrapped mode (`skim -- cmd ...`), skim returns the wrapped command exit code.
 
 ## Skill packaging
 

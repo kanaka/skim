@@ -12,7 +12,7 @@ options:
   --head N                Number of leading lines to print (default: 5)
   --tail N                Number of trailing lines to print (default: 5)
   -N                      Shorthand for --head N --tail N (example: -3)
-  --tick-every N          Print a marker every N lines (default: 20)
+  --tick-every N          Print a marker every N lines (default: 1)
   --tick-char C           Single marker character (default: .)
   --peek-every N          Print current line every N lines (default: 0)
   --timeout SEC           Timeout in seconds for total run (default: 0)
@@ -46,7 +46,7 @@ const TOKEN_OPTIONS = {
   help: { type: "boolean", short: "h", default: false },
   head: { type: "string", default: "5" },
   tail: { type: "string", default: "5" },
-  "tick-every": { type: "string", default: "20" },
+  "tick-every": { type: "string", default: "1" },
   "tick-char": { type: "string", default: "." },
   "peek-every": { type: "string", default: "0" },
   timeout: { type: "string", default: "0" },

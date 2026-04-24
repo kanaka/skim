@@ -4,7 +4,7 @@
 
 - `--head <n>`: leading lines (default: 5)
 - `--tail <n>`: trailing lines (default: 5)
-- `--tick-every <n>`: marker interval (default: 20, `0` disables)
+- `--tick-every <n>`: marker interval (default: 1, `0` disables)
 - `--tick-char <c>`: marker character (default: `.`)
 - `--peek-every <n>`: periodic full-line sample (default: 0, disabled)
 - `--timeout <seconds>`: stop reading after total timeout (returns `124`)

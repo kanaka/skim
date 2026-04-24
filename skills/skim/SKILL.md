@@ -23,7 +23,7 @@ Use `./scripts/skim` to replace most end-of-command `| head ...` / `| tail ...` 
 
 Default behavior:
 - first 5 lines
-- `.` every 20 lines (no newline)
+- `.` every 1 lines (no newline)
 - last 5 lines
 - full output saved to temp log (path printed to stderr)
 

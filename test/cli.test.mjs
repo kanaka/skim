@@ -67,7 +67,9 @@ test('default output shape', () => {
   assert.equal(res.status, 0)
   assert.equal(res.stderr, '')
 
-  const expected = render([1, 2, 3, 4, 5, '..', 36, 37, 38, 39, 40])
+  const expected = render([1, 2, 3, 4, 5,
+                           '........................................',
+                           36, 37, 38, 39, 40])
   assert.equal(res.stdout, expected)
 })
 

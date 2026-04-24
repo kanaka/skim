@@ -50,7 +50,7 @@ test('package.json agents.skills entries are valid', () => {
 test('bin points to executable skim', () => {
   const pkg = readJSON(path.join(root, 'package.json'))
   const rel = pkg?.bin?.skim
-  assert.equal(rel, './skim', 'bin.skim must point to ./skim')
+  assert.equal(rel, 'skim', 'bin.skim must point to "skim"')
 
   const binPath = path.join(root, 'skim')
   assert.ok(fs.existsSync(binPath), 'skim executable missing')

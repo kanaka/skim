@@ -3,7 +3,6 @@
   "version": "0.2.0",
   "description": "CLI utility for verbose command summary/capture (head+tail+tee+timeout). With agent skill packaging.",
   "license": "MIT",
-  "private": true,
   "keywords": [
     "cli",
     "command-output",
@@ -16,7 +15,7 @@
     "tee"
   ],
   "bin": {
-    "skim": "./skim"
+    "skim": "skim"
   },
   "files": [
     "skim",

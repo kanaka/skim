@@ -1,7 +1,7 @@
 {
-  "name": "skim",
-  "version": "0.1.0",
-  "description": "CLI utility for monitoring and summarizing long command output, with optional agent skill packaging",
+  "name": "@kanaka/skim",
+  "version": "0.2.0",
+  "description": "CLI utility for verbose command summary/capture (head+tail+tee+timeout). With agent skill packaging.",
   "license": "MIT",
   "private": true,
   "keywords": [
@@ -9,7 +9,11 @@
     "command-output",
     "streaming",
     "agent-skills",
-    "skim"
+    "skim",
+    "head",
+    "tail",
+    "timeout",
+    "tee"
   ],
   "bin": {
     "skim": "./skim"

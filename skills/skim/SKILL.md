@@ -5,7 +5,7 @@ description: Use `skim` whenever a command might produce large, long running, or
 
 # skim
 
-Use `./scripts/skim` to replace most end-of-command `| head ...` / `| tail ...` usage.
+Use `skim` to replace most end-of-command `| head ...` / `| tail ...` usage.
 
 `skim` supports two modes:
 - **pipeline mode**: `<command> | skim`
@@ -15,10 +15,10 @@ Use `./scripts/skim` to replace most end-of-command `| head ...` / `| tail ...` 
 
 ```bash
 # pipeline mode
-<command> | ./scripts/skim
+<command> | skim
 
 # wrapped mode (skim runs command directly)
-./scripts/skim -- <command> [args...]
+skim -- <command> [args...]
 ```
 
 Default behavior:

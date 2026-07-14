@@ -1,6 +1,6 @@
 {
   "name": "@kanaka/skim",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CLI utility for verbose command summary/capture (head+tail+tee+timeout). With agent skill packaging.",
   "license": "MIT",
   "publishConfig": {

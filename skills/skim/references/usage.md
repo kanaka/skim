@@ -34,6 +34,18 @@ some-command | skim --head 10 --tail 15
 skim --inactive-timeout 30 -- some-command
 ```
 
+## stderr capture
+
+- In wrapped mode (`skim -- cmd ...`), skim captures both stdout and stderr in true write order: the command is launched via a fixed POSIX-sh wrapper (`sh -c 'exec "$@" 2>&1'`) that merges stderr into stdout at the fd level and then replaces itself with the command (`child.pid` is the real command, not a shell).
+- Security: command arguments are passed as positional parameters and expanded with quoted `"$@"`. They are never interpolated into shell text, so metacharacters (`$(...)`, backticks, `;`, globs) in arguments are not evaluated.
+- A missing command is reported by sh inside the captured output and exits `127`. Wrapped mode requires `/bin/sh` and skim exits with an error where none exists (e.g. Windows, distroless containers). Pipeline mode has no such requirement.
+- Log files are created with mode `0600`, since captured stderr often contains more sensitive material than stdout.
+- In pipeline mode (`cmd | skim`), only stdout is piped in. Add `2>&1` to the upstream command if you want stderr too:
+
+```bash
+some-command 2>&1 | skim
+```
+
 ## Exit-code note
 
 - In `cmd | skim` pipelines, upstream failures can be hidden unless your shell uses `pipefail`.

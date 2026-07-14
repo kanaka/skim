@@ -53,6 +53,8 @@ skim --inactive-timeout 30 -- <command>
 - While total size is still unknown, marker/sample events are buffered; as soon as input exceeds `head + tail`, buffered events are emitted immediately, then streaming continues normally.
 - Exit code is `124` for `--timeout` and `125` for `--inactive-timeout`.
 - In wrapped mode (`skim -- cmd ...`), skim returns the wrapped command's exit code on normal completion.
+- In wrapped mode (`skim -- cmd ...`), both stdout and stderr are captured automatically, interleaved in true write order (stderr is merged into stdout at the fd level before the command runs). Arguments are passed verbatim; shell metacharacters in them are not evaluated. A missing command exits `127`.
+- In pipeline mode (`cmd | skim`), only stdout is captured; add `2>&1` to the upstream command (e.g. `cmd 2>&1 | skim`) if you also want stderr included.
 - `--inactive-timeout` is only supported in wrapped mode.
 - In pipeline mode, `--timeout` may not interrupt until the upstream command performs its next write.
 - In plain pipelines (`cmd | skim`), use shell `pipefail` if you need upstream failures to affect pipeline status.

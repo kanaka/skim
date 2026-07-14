@@ -276,6 +276,38 @@ test('wrapped mode returns child exit code', () => {
   assert.equal(res.stdout, 'ok\n')
 })
 
+test('wrapped mode captures stderr interleaved in write order', () => {
+  const res = run([
+    '--tick-every', '0',
+    '--',
+    'sh', '-c',
+    'echo out1; echo err1 >&2; echo out2',
+  ])
+
+  assert.equal(res.status, 0)
+  // both streams share one fd into the log, so ordering is exact write order
+  assert.equal(res.stdout, render(['out1', 'err1', 'out2']))
+
+  const logPath = parseLogPath(res.stderr)
+  assert.equal(fs.readFileSync(logPath, 'utf8'), render(['out1', 'err1', 'out2']))
+})
+
+test('wrapped mode passes args verbatim (no shell interpolation)', () => {
+  const args = ['$(echo pwned)', '`echo pwned`', 'a b; echo pwned', '2>&1', '$HOME', '*']
+  const res = run(['--tick-every', '0', '--quiet-log-path', '--', 'printf', '%s\n', ...args])
+
+  assert.equal(res.status, 0)
+  // metacharacters arrive as literal argv entries, never evaluated
+  assert.equal(res.stdout, render(args))
+})
+
+test('wrapped mode reports missing command in stream and exits 127', () => {
+  const res = run(['--quiet-log-path', '--', 'definitely-no-such-cmd-xyz'])
+
+  assert.equal(res.status, 127)
+  assert.match(res.stdout, /not found/)
+})
+
 test('shorthand still works after regular options', () => {
   const res = run(['--head', '2', '-3', '--tick-every', '0', '--quiet-log-path'], lines(1, 8))
   assert.equal(res.status, 0)
